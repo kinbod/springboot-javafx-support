@@ -8,6 +8,8 @@ import java.awt.*;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.function.Consumer;
+
 import javafx.application.*;
 import javafx.scene.*;
 import javafx.scene.control.*;
@@ -34,6 +36,8 @@ public abstract class AbstractJavaFxApplicationSupport extends Application {
     private static ConfigurableApplicationContext applicationContext;
 
     private static List<Image> icons = new ArrayList<>();
+
+    private static Consumer<Throwable> errorAction = defaultErrorAction();
 
     private final List<Image> defaultIcons = new ArrayList<>();
 
@@ -84,14 +88,17 @@ public abstract class AbstractJavaFxApplicationSupport extends Application {
      */
     @Override
     public void init() throws Exception {
-        // Load in JavaFx Thread and reused by Completable Future, but should no be a big deal.
+        // Load in JavaFx Thread and reused by Completable Future, but should not be a big deal.
+        // Provide an executor instead of using default, otherwise spring application will fail to start via JAR(mvn package)
+        ExecutorService executor = Executors.newSingleThreadExecutor();
         defaultIcons.addAll(loadDefaultIcons());
         CompletableFuture.supplyAsync(() ->
-            SpringApplication.run(this.getClass(), savedArgs)
+            SpringApplication.run(this.getClass(), savedArgs), executor
         ).whenComplete((ctx, throwable) -> {
             if (throwable != null) {
                 LOGGER.error("Failed to load spring application context: ", throwable);
-                Platform.runLater(() -> showErrorAlert(throwable));
+                executor.shutdown();
+                Platform.runLater(() -> errorAction.accept(throwable));
             } else {
                 Platform.runLater(() -> {
                     loadIcons(ctx);
@@ -99,6 +106,7 @@ public abstract class AbstractJavaFxApplicationSupport extends Application {
                 });
             }
         }).thenAcceptBothAsync(splashIsShowing, (ctx, closeSplash) -> {
+            executor.shutdown();
             Platform.runLater(closeSplash);
         });
     }
@@ -176,21 +184,24 @@ public abstract class AbstractJavaFxApplicationSupport extends Application {
         }
         catch (Throwable t) {
             LOGGER.error("Failed to load application: ", t);
-            showErrorAlert(t);
+            errorAction.accept(t);
         }
     }
 
+    protected static void setErrorAction(Consumer<Throwable> callback) {
+        errorAction = callback;
+    }
+
     /**
-     * Show error alert that close app.
-     *
-     * @param throwable cause of error
+     * Default error action that shows a message and closes the app.
      */
-    private static void showErrorAlert(Throwable throwable) {
-        Alert alert = new Alert(AlertType.ERROR, "Oops! An unrecoverable error occurred.\n" +
-                "Please contact your software vendor.\n\n" +
-                "The application will stop now.\n\n" +
-                "Error: " + throwable.getMessage());
-        alert.showAndWait().ifPresent(response -> Platform.exit());
+    private static Consumer<Throwable> defaultErrorAction() {
+        return e -> {
+            Alert alert = new Alert(AlertType.ERROR, "Oops! An unrecoverable error occurred.\n" +
+                    "Please contact your software vendor.\n\n" +
+                    "The application will stop now.");
+            alert.showAndWait().ifPresent(response -> Platform.exit());
+        };
     }
 
     /**
